@@ -188,6 +188,11 @@ public class MainActivity extends Activity implements OnClickListener {
 	public void connect(BluetoothDevice device) {
 		Log.d(TAG, "connect to: " + device);
 		// Start the thread to connect with the given device
+		if (mConnectThread != null) {
+		    mConnectThread.cancel();
+		    mConnectThread = null;
+		}		
+		
 		mConnectThread = new ConnectThread(device);
 		mConnectThread.start();
 	}
@@ -198,141 +203,91 @@ public class MainActivity extends Activity implements OnClickListener {
 	 * fails.
 	 */
 	private class ConnectThread extends Thread {
-		private final BluetoothSocket mmSocket;
-		private final BluetoothDevice mmDevice;
+        private final BluetoothSocket mmSocket;
+        private final BluetoothDevice mmDevice;
 
-		public ConnectThread(BluetoothDevice device) {
-			mmDevice = device;
-			BluetoothSocket tmp = null;
+        private InputStream mmInStream;
+        private OutputStream mmOutStream;
 
-			// Get a BluetoothSocket for a connection with the
-			// given BluetoothDevice
+        public ConnectThread(BluetoothDevice device) {
+            mmDevice = device;
+            BluetoothSocket tmp = null;
+
+            // Get a BluetoothSocket for a connection with the
+            // given BluetoothDevice
+            try {
+                tmp = device.createRfcommSocketToServiceRecord(UUID
+                        .fromString(SPP_UUID));
+            } catch (IOException e) {
+                Log.e(TAG, "create() failed", e);
+            }
+            mmSocket = tmp;
+        }
+
+        public void run() {
+            Log.i(TAG, "BEGIN mConnectThread");
+            setName("ConnectThread");
+
+            // Always cancel discovery because it will slow down a connection
+            mBluetoothAdapter.cancelDiscovery();
+
+            // Make a connection to the BluetoothSocket
+            try {
+                // This is a blocking call and will only return on a
+                // successful connection or an exception
+                mmSocket.connect();
+            } catch (IOException e) {
+
+                Log.e(TAG, "unable to connect() socket", e);
+                // Close the socket
+                try {
+                    mmSocket.close();
+                } catch (IOException e2) {
+                    Log.e(TAG,
+                            "unable to close() socket during connection failure",
+                            e2);
+                }
+                return;
+		    }
+
+		    InputStream tmpIn = null;
+		    OutputStream tmpOut = null;
+
+		    // Get the BluetoothSocket input and output streams
+		    try {
+			tmpIn = mmSocket.getInputStream();
+			tmpOut = mmSocket.getOutputStream();
+		    } catch (IOException e) {
+			Log.e(TAG, "temp sockets not created", e);
+		    }
+
+		    mmInStream = tmpIn;
+		    mmOutStream = tmpOut;
+
+		    Log.i(TAG, "BEGIN mConnectedThread");
+		    byte[] buffer = new byte[256];
+		    int bytes;
+
+		    // Keep listening to the InputStream while connected
+		    while (true) {
 			try {
-				tmp = device.createRfcommSocketToServiceRecord(UUID
-						.fromString(SPP_UUID));
-			} catch (IOException e) {
-				Log.e(TAG, "create() failed", e);
-			}
-			mmSocket = tmp;
-		}
-
-		public void run() {
-			Log.i(TAG, "BEGIN mConnectThread");
-			setName("ConnectThread");
-
-			// Always cancel discovery because it will slow down a connection
-			mBluetoothAdapter.cancelDiscovery();
-
-			// Make a connection to the BluetoothSocket
-			try {
-				// This is a blocking call and will only return on a
-				// successful connection or an exception
-				mmSocket.connect();
-			} catch (IOException e) {
-
-				Log.e(TAG, "unable to connect() socket", e);
-				// Close the socket
-				try {
-					mmSocket.close();
-				} catch (IOException e2) {
-					Log.e(TAG,
-							"unable to close() socket during connection failure",
-							e2);
+			    // Read from the InputStream
+			    bytes = mmInStream.read(buffer);
+			    synchronized (mBuffer) {
+				for (int i = 0; i < bytes; i++) {
+				    mBuffer.add(buffer[i] & 0xFF);
 				}
-				return;
-			}
-
-			mConnectThread = null;
-
-			// Start the connected thread
-			// Start the thread to manage the connection and perform
-			// transmissions
-			mConnectedThread = new ConnectedThread(mmSocket);
-			mConnectedThread.start();
-
-		}
-
-		public void cancel() {
-			try {
-				mmSocket.close();
+			    }
+			    mHandler.sendEmptyMessage(MSG_NEW_DATA);
 			} catch (IOException e) {
-				Log.e(TAG, "close() of connect socket failed", e);
+			    Log.e(TAG, "disconnected", e);
+			    break;
 			}
-		}
-	}
+		    }
 
-	/**
-	 * This thread runs during a connection with a remote device. It handles all
-	 * incoming and outgoing transmissions.
-	 */
-	private class ConnectedThread extends Thread {
-		private final BluetoothSocket mmSocket;
-		private final InputStream mmInStream;
-		private final OutputStream mmOutStream;
 
-		public ConnectedThread(BluetoothSocket socket) {
-			Log.d(TAG, "create ConnectedThread");
-			mmSocket = socket;
-			InputStream tmpIn = null;
-			OutputStream tmpOut = null;
+        }
 
-			// Get the BluetoothSocket input and output streams
-			try {
-				tmpIn = socket.getInputStream();
-				tmpOut = socket.getOutputStream();
-			} catch (IOException e) {
-				Log.e(TAG, "temp sockets not created", e);
-			}
-
-			mmInStream = tmpIn;
-			mmOutStream = tmpOut;
-		}
-
-		public void run() {
-			Log.i(TAG, "BEGIN mConnectedThread");
-			byte[] buffer = new byte[256];
-			int bytes;
-
-			// Keep listening to the InputStream while connected
-			while (true) {
-				try {
-					// Read from the InputStream
-					bytes = mmInStream.read(buffer);
-					synchronized (mBuffer) {
-						for (int i = 0; i < bytes; i++) {
-							mBuffer.add(buffer[i] & 0xFF);
-						}
-					}
-					mHandler.sendEmptyMessage(MSG_NEW_DATA);
-				} catch (IOException e) {
-					Log.e(TAG, "disconnected", e);
-					break;
-				}
-			}
-		}
-
-		/**
-		 * Write to the connected OutStream.
-		 * 
-		 * @param buffer
-		 *            The bytes to write
-		 */
-		public void write(byte[] buffer) {
-			try {
-				mmOutStream.write(buffer);
-			} catch (IOException e) {
-				Log.e(TAG, "Exception during write", e);
-			}
-		}
-
-		public void cancel() {
-			try {
-				mmSocket.close();
-			} catch (IOException e) {
-				Log.e(TAG, "close() of connect socket failed", e);
-			}
-		}
-	}
 
 	@Override
 	public boolean onCreateOptionsMenu(Menu menu) {
@@ -397,12 +352,6 @@ public class MainActivity extends Activity implements OnClickListener {
 			mBuffer.clear();
 			mTextView.setText("");
 		}else if(v == mScanBtn){
-			if (mConnectThread != null) {
-				mConnectThread.cancel();
-				mConnectThread = null;
-			}
-			// if(mConnectedThread != null) {mConnectedThread.cancel();
-			// mConnectedThread = null;}
 			Intent serverIntent = new Intent(this, DeviceListActivity.class);
 			startActivityForResult(serverIntent, REQUEST_CONNECT_DEVICE);
 		}else if(v == mPauseBtn){
@@ -414,26 +363,29 @@ public class MainActivity extends Activity implements OnClickListener {
 				mPauseBtn.setText("Resume");
 			}
 		}else if(v == mSendBtn){
-			String input = mEditText.getText().toString().trim();
-			if (input != null && !"".equals(input)) {
-				String[] data = input.split(" ");
-				byte[] tmp = new byte[data.length];
-				switch (mCodeType) {
-				case HEX:
-				case ASCII:
-					for (int i = 0; i < data.length; i++) {
-						tmp[i] = (byte) Integer.parseInt(data[i], 16);
-					}
-					break;
-				case DEC:
-					for (int i = 0; i < data.length; i++) {
-						tmp[i] = (byte) Integer.parseInt(data[i], 10);
-					}
-					break;
+		    if((mConnectThread == null) || (!mConnectThread.isConnected())) {
+			return;
+		    }
 
-				}
-				mConnectedThread.write(tmp);
+		    if(mCodeType != ASCII){
+			String input = mEditText.getText().toString().trim();
+
+			if (input != null && !"".equals(input)) {
+			    String[] data = input.split(" ");
+			    byte[] tmp = new byte[data.length];
+
+			    for (int i = 0; i < data.length; i++) {
+				tmp[i] = (byte) Integer.parseInt(data[i], mCodeType);
+			    }
+			    mConnectThread.write(tmp);
 			}
+		    }
+		    else{
+			byte[] tmp = mEditText.getText().toString().getBytes();
+			mConnectThread.write(tmp);
+		    }
+
+		    mEditText.setText("");
 		}
 	}
 
